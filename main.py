@@ -10,13 +10,13 @@ from discord.ext import commands, tasks
 # НАСТРОЙКИ
 # ==========================================================
 
-# Discord Bot Token
+# Токен бота берётся из переменной окружения
 TOKEN = os.getenv("DISCORD_TOKEN")
 
-# Сервер
+# ID сервера
 GUILD_ID = 1338880308514131998
 
-# Основной голосовой канал
+# ID основного голосового канала
 VOICE_CHANNEL_ID = 1548258709476474881
 
 
@@ -56,35 +56,26 @@ class Bot(commands.Bot):
         )
 
         # --------------------------------------------------
-        # Флаг запуска
-        # --------------------------------------------------
-
-        self.ready_once = False
-
-        # --------------------------------------------------
-        # Запоминаем голосовой канал,
-        # в котором бот находится
-        #
-        # Это позволяет понять:
-        #
-        # бот был перетащен
-        # или
-        # бот был отключён
+        # ID голосового канала, в котором бот находится
         # --------------------------------------------------
 
         self.last_voice_channel_id = None
 
         # --------------------------------------------------
-        # Запускаем проверку голосового соединения
+        # Флаг запуска watchdog
         # --------------------------------------------------
 
-        self.voice_watchdog.start()
+        self.watchdog_started = False
 
     # ======================================================
     # SETUP HOOK
     # ======================================================
 
     async def setup_hook(self):
+
+        logger.info(
+            "[Bot] Выполняется setup_hook..."
+        )
 
         # --------------------------------------------------
         # Загружаем Music Cog
@@ -97,7 +88,7 @@ class Bot(commands.Bot):
             )
 
             logger.info(
-                "[Bot] Cog Music успешно загружен."
+                "[Bot] ✅ Cog music успешно загружен."
             )
 
         except Exception as e:
@@ -116,15 +107,33 @@ class Bot(commands.Bot):
             synced = await self.tree.sync()
 
             logger.info(
-                "[Bot] Slash-команд синхронизировано: %s",
+                "[Bot] ✅ Slash-команд синхронизировано: %s",
                 len(synced)
             )
 
         except Exception as e:
 
             logger.exception(
-                "[Bot] ❌ Ошибка синхронизации команд: %s",
+                "[Bot] ❌ Ошибка синхронизации slash-команд: %s",
                 e
+            )
+
+        # --------------------------------------------------
+        # ВАЖНО
+        #
+        # Здесь event loop уже запущен.
+        #
+        # Поэтому tasks.loop можно запускать здесь.
+        # --------------------------------------------------
+
+        if not self.watchdog_started:
+
+            self.voice_watchdog.start()
+
+            self.watchdog_started = True
+
+            logger.info(
+                "[Voice] ✅ Voice watchdog запущен."
             )
 
     # ======================================================
@@ -134,28 +143,22 @@ class Bot(commands.Bot):
     async def on_ready(self):
 
         logger.info(
-            "[Bot] ✅ Авторизован как %s (%s)",
+            "[Bot] ========================================"
+        )
+
+        logger.info(
+            "[Bot] ✅ Бот авторизован:"
+        )
+
+        logger.info(
+            "[Bot] %s (%s)",
             self.user,
             self.user.id
         )
 
-        # --------------------------------------------------
-        # Не выполняем повторную инициализацию
-        # --------------------------------------------------
-
-        if self.ready_once:
-
-            logger.info(
-                "[Bot] Повторное подключение."
-            )
-
-        else:
-
-            self.ready_once = True
-
-            logger.info(
-                "[Bot] Первый запуск."
-            )
+        logger.info(
+            "[Bot] ========================================"
+        )
 
         # --------------------------------------------------
         # Получаем сервер
@@ -175,13 +178,13 @@ class Bot(commands.Bot):
             return
 
         logger.info(
-            "[Bot] Сервер: %s (%s)",
+            "[Bot] Сервер найден: %s (%s)",
             guild.name,
             guild.id
         )
 
         # --------------------------------------------------
-        # Проверяем основной голосовой канал
+        # Получаем голосовой канал
         # --------------------------------------------------
 
         channel = guild.get_channel(
@@ -191,11 +194,20 @@ class Bot(commands.Bot):
         if channel is None:
 
             logger.error(
-                "[Bot] ❌ Голосовой канал %s не найден.",
+                "[Voice] ❌ Канал %s не найден.",
                 VOICE_CHANNEL_ID
             )
 
             return
+
+        # --------------------------------------------------
+        # Проверяем тип канала
+        # --------------------------------------------------
+
+        logger.info(
+            "[Voice] Тип канала: %s",
+            type(channel).__name__
+        )
 
         if not isinstance(
             channel,
@@ -203,14 +215,20 @@ class Bot(commands.Bot):
         ):
 
             logger.error(
-                "[Bot] ❌ Канал %s не является голосовым.",
+                "[Voice] ❌ Канал %s не является обычным голосовым каналом.",
                 VOICE_CHANNEL_ID
             )
 
             return
 
+        logger.info(
+            "[Voice] Найден канал: %s (%s)",
+            channel.name,
+            channel.id
+        )
+
         # --------------------------------------------------
-        # Проверяем текущее подключение
+        # Проверяем текущий VoiceClient
         # --------------------------------------------------
 
         voice_client = guild.voice_client
@@ -221,7 +239,7 @@ class Bot(commands.Bot):
         ):
 
             logger.info(
-                "[Voice] Уже подключён к: %s",
+                "[Voice] 🔊 Бот уже подключён к: %s",
                 voice_client.channel.name
             )
 
@@ -241,7 +259,7 @@ class Bot(commands.Bot):
         )
 
     # ======================================================
-    # ПОДКЛЮЧЕНИЕ К ГОЛОСОВОМУ КАНАЛУ
+    # ПОДКЛЮЧЕНИЕ К ОСНОВНОМУ КАНАЛУ
     # ======================================================
 
     async def connect_to_main_channel(
@@ -250,78 +268,247 @@ class Bot(commands.Bot):
         channel: discord.VoiceChannel
     ):
 
-        try:
+        logger.info(
+            "[Voice] ========================================"
+        )
 
-            voice_client = guild.voice_client
+        logger.info(
+            "[Voice] Попытка подключения к голосовому каналу"
+        )
+
+        logger.info(
+            "[Voice] Guild: %s (%s)",
+            guild.name,
+            guild.id
+        )
+
+        logger.info(
+            "[Voice] Channel: %s (%s)",
+            channel.name,
+            channel.id
+        )
+
+        # --------------------------------------------------
+        # Проверяем участника бота
+        # --------------------------------------------------
+
+        if guild.me is None:
+
+            logger.error(
+                "[Voice] ❌ guild.me == None"
+            )
+
+            return
+
+        # --------------------------------------------------
+        # Проверяем права
+        # --------------------------------------------------
+
+        permissions = channel.permissions_for(
+            guild.me
+        )
+
+        logger.info(
+            "[Voice] Права бота:"
+        )
+
+        logger.info(
+            "[Voice] View Channel = %s",
+            permissions.view_channel
+        )
+
+        logger.info(
+            "[Voice] Connect = %s",
+            permissions.connect
+        )
+
+        logger.info(
+            "[Voice] Speak = %s",
+            permissions.speak
+        )
+
+        # --------------------------------------------------
+        # View Channel
+        # --------------------------------------------------
+
+        if not permissions.view_channel:
+
+            logger.error(
+                "[Voice] ❌ У бота нет права View Channel."
+            )
+
+            return
+
+        # --------------------------------------------------
+        # Connect
+        # --------------------------------------------------
+
+        if not permissions.connect:
+
+            logger.error(
+                "[Voice] ❌ У бота нет права Connect."
+            )
+
+            return
+
+        # --------------------------------------------------
+        # Получаем существующий VoiceClient
+        # --------------------------------------------------
+
+        voice_client = guild.voice_client
+
+        # --------------------------------------------------
+        # Если уже подключён
+        # --------------------------------------------------
+
+        if (
+            voice_client is not None
+            and voice_client.is_connected()
+        ):
 
             # --------------------------------------------------
-            # Уже подключён
+            # Бот уже в основном канале
             # --------------------------------------------------
 
-            if (
-                voice_client is not None
-                and voice_client.is_connected()
-            ):
-
-                # Если уже в нужном канале
-                if voice_client.channel.id == channel.id:
-
-                    self.last_voice_channel_id = (
-                        channel.id
-                    )
-
-                    return
-
-                # --------------------------------------------------
-                # Если находится в другом канале,
-                # НЕ перетаскиваем обратно.
-                #
-                # Пользователь имеет право перемещать бота.
-                # --------------------------------------------------
-
-                logger.info(
-                    "[Voice] Бот находится в другом канале: %s",
-                    voice_client.channel.name
-                )
+            if voice_client.channel.id == channel.id:
 
                 self.last_voice_channel_id = (
-                    voice_client.channel.id
+                    channel.id
+                )
+
+                logger.info(
+                    "[Voice] ✅ Бот уже находится в основном канале."
                 )
 
                 return
 
             # --------------------------------------------------
-            # Подключаемся
+            # Бот находится в другом канале.
+            #
+            # НЕ возвращаем его обратно.
+            #
+            # Значит, пользователь его перетащил.
             # --------------------------------------------------
 
+            self.last_voice_channel_id = (
+                voice_client.channel.id
+            )
+
             logger.info(
-                "[Voice] Подключение к: %s",
-                channel.name
+                "[Voice] 🔄 Бот находится в другом канале: %s",
+                voice_client.channel.name
+            )
+
+            logger.info(
+                "[Voice] Бот остаётся в этом канале."
+            )
+
+            return
+
+        # --------------------------------------------------
+        # Если остался старый VoiceClient
+        # --------------------------------------------------
+
+        if voice_client is not None:
+
+            logger.warning(
+                "[Voice] ⚠️ Обнаружен неактивный VoiceClient."
+            )
+
+            try:
+
+                await voice_client.disconnect(
+                    force=True
+                )
+
+            except Exception as e:
+
+                logger.warning(
+                    "[Voice] Не удалось закрыть старый VoiceClient: %s",
+                    e
+                )
+
+            await asyncio.sleep(1)
+
+        # --------------------------------------------------
+        # Подключаемся
+        # --------------------------------------------------
+
+        try:
+
+            logger.info(
+                "[Voice] 🔊 Выполняю channel.connect()..."
             )
 
             voice_client = await channel.connect(
+                timeout=30,
                 reconnect=True
             )
+
+            # --------------------------------------------------
+            # Запоминаем канал
+            # --------------------------------------------------
 
             self.last_voice_channel_id = (
                 channel.id
             )
 
             logger.info(
-                "[Voice] ✅ Подключён к: %s",
-                channel.name
+                "[Voice] ========================================"
             )
 
-        except asyncio.CancelledError:
+            logger.info(
+                "[Voice] ✅ УСПЕШНО ПОДКЛЮЧЁН К VOICE!"
+            )
 
-            raise
+            logger.info(
+                "[Voice] Канал: %s",
+                voice_client.channel.name
+            )
+
+            logger.info(
+                "[Voice] ID: %s",
+                voice_client.channel.id
+            )
+
+            logger.info(
+                "[Voice] ========================================"
+            )
+
+        except asyncio.TimeoutError:
+
+            logger.error(
+                "[Voice] ❌ Таймаут подключения к Discord Voice."
+            )
+
+        except discord.Forbidden as e:
+
+            logger.error(
+                "[Voice] ❌ Discord Forbidden: %s",
+                e
+            )
+
+            logger.error(
+                "[Voice] Проверь права Connect / View Channel."
+            )
+
+        except discord.ClientException as e:
+
+            logger.error(
+                "[Voice] ❌ Discord ClientException: %s",
+                e
+            )
 
         except Exception as e:
 
             logger.exception(
-                "[Voice] ❌ Ошибка подключения: %s",
+                "[Voice] ❌ Ошибка подключения к Voice: %s",
                 e
             )
+
+        logger.info(
+            "[Voice] ========================================"
+        )
 
     # ======================================================
     # VOICE STATE UPDATE
@@ -339,13 +526,15 @@ class Bot(commands.Bot):
         # --------------------------------------------------
 
         if self.user is None:
+
             return
 
         if member.id != self.user.id:
+
             return
 
         # --------------------------------------------------
-        # Бот был отключён от голосового канала
+        # БОТА ПОЛНОСТЬЮ ОТКЛЮЧИЛИ ОТ VOICE
         # --------------------------------------------------
 
         if (
@@ -354,17 +543,54 @@ class Bot(commands.Bot):
         ):
 
             logger.warning(
-                "[Voice] ⚠️ Бот отключён из канала: %s",
-                before.channel.name
+                "[Voice] ⚠️ БОТ ОТКЛЮЧЁН ИЗ VOICE!"
             )
 
+            logger.warning(
+                "[Voice] Предыдущий канал: %s (%s)",
+                before.channel.name,
+                before.channel.id
+            )
+
+            # --------------------------------------------------
             # Небольшая задержка.
             #
-            # Discord иногда присылает несколько
-            # voice state событий подряд.
+            # Это позволяет Discord завершить
+            # старое voice-соединение.
+            # --------------------------------------------------
+
             await asyncio.sleep(2)
 
+            # --------------------------------------------------
+            # Получаем сервер
+            # --------------------------------------------------
+
             guild = member.guild
+
+            # --------------------------------------------------
+            # Проверяем, не подключился ли бот уже сам
+            # --------------------------------------------------
+
+            voice_client = guild.voice_client
+
+            if (
+                voice_client is not None
+                and voice_client.is_connected()
+            ):
+
+                logger.info(
+                    "[Voice] Бот уже снова подключён."
+                )
+
+                self.last_voice_channel_id = (
+                    voice_client.channel.id
+                )
+
+                return
+
+            # --------------------------------------------------
+            # Основной канал
+            # --------------------------------------------------
 
             channel = guild.get_channel(
                 VOICE_CHANNEL_ID
@@ -373,10 +599,18 @@ class Bot(commands.Bot):
             if channel is None:
 
                 logger.error(
-                    "[Voice] ❌ Основной канал не найден."
+                    "[Voice] ❌ Основной голосовой канал не найден."
                 )
 
                 return
+
+            # --------------------------------------------------
+            # Возвращаемся
+            # --------------------------------------------------
+
+            logger.info(
+                "[Voice] 🔙 Возвращаю бота в основной канал."
+            )
 
             await self.connect_to_main_channel(
                 guild,
@@ -385,9 +619,9 @@ class Bot(commands.Bot):
 
             return
 
-        # --------------------------------------------------
-        # Бота переместили в другой канал
-        # --------------------------------------------------
+        # ==================================================
+        # БОТА ПЕРЕТАЩИЛИ В ДРУГОЙ КАНАЛ
+        # ==================================================
 
         if (
             before.channel is not None
@@ -396,31 +630,38 @@ class Bot(commands.Bot):
         ):
 
             logger.info(
-                "[Voice] 🔄 Бот перемещён: "
-                "%s -> %s",
+                "[Voice] 🔄 Бот перемещён:"
+            )
+
+            logger.info(
+                "[Voice] %s (%s) -> %s (%s)",
                 before.channel.name,
-                after.channel.name
+                before.channel.id,
+                after.channel.name,
+                after.channel.id
             )
 
             # --------------------------------------------------
-            # Запоминаем новое положение.
-            #
-            # Бот остаётся там, куда его перетащили.
+            # Запоминаем новое положение
             # --------------------------------------------------
 
             self.last_voice_channel_id = (
                 after.channel.id
             )
 
+            logger.info(
+                "[Voice] Бот остаётся в новом канале."
+            )
+
     # ======================================================
-    # WATCHDOG
+    # VOICE WATCHDOG
     # ======================================================
 
     @tasks.loop(seconds=15)
     async def voice_watchdog(self):
 
         # --------------------------------------------------
-        # Бот ещё не готов
+        # Проверяем готовность
         # --------------------------------------------------
 
         if not self.is_ready():
@@ -437,16 +678,20 @@ class Bot(commands.Bot):
 
         if guild is None:
 
+            logger.warning(
+                "[Voice] Сервер ещё не найден."
+            )
+
             return
 
         # --------------------------------------------------
-        # VoiceClient
+        # Получаем VoiceClient
         # --------------------------------------------------
 
         voice_client = guild.voice_client
 
         # --------------------------------------------------
-        # Бот полностью отключён
+        # Бот не подключён
         # --------------------------------------------------
 
         if (
@@ -457,6 +702,10 @@ class Bot(commands.Bot):
             logger.warning(
                 "[Voice] ⚠️ Бот не подключён к голосовому каналу."
             )
+
+            # --------------------------------------------------
+            # Получаем основной канал
+            # --------------------------------------------------
 
             channel = guild.get_channel(
                 VOICE_CHANNEL_ID
@@ -470,6 +719,10 @@ class Bot(commands.Bot):
 
                 return
 
+            # --------------------------------------------------
+            # Пытаемся подключиться
+            # --------------------------------------------------
+
             await self.connect_to_main_channel(
                 guild,
                 channel
@@ -478,17 +731,20 @@ class Bot(commands.Bot):
             return
 
         # --------------------------------------------------
-        # Бот находится в каком-то голосовом канале
+        # Бот подключён.
+        #
+        # НЕ проверяем, находится ли он именно
+        # в VOICE_CHANNEL_ID.
+        #
+        # Пользователь может перетащить его куда угодно.
         # --------------------------------------------------
 
-        current_channel = voice_client.channel
-
         self.last_voice_channel_id = (
-            current_channel.id
+            voice_client.channel.id
         )
 
     # ======================================================
-    # WAIT UNTIL READY
+    # WATCHDOG BEFORE LOOP
     # ======================================================
 
     @voice_watchdog.before_loop
@@ -496,13 +752,21 @@ class Bot(commands.Bot):
 
         await self.wait_until_ready()
 
+        logger.info(
+            "[Voice] Watchdog готов к работе."
+        )
+
 
 # ==========================================================
-# ЗАПУСК
+# СОЗДАЁМ BOT
 # ==========================================================
 
 bot = Bot()
 
+
+# ==========================================================
+# ПРОВЕРКА TOKEN
+# ==========================================================
 
 if not TOKEN:
 
@@ -510,5 +774,9 @@ if not TOKEN:
         "Переменная окружения DISCORD_TOKEN не задана."
     )
 
+
+# ==========================================================
+# ЗАПУСК
+# ==========================================================
 
 bot.run(TOKEN)
